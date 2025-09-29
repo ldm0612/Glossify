@@ -8,8 +8,11 @@ Glossify is a full-stack application that transforms academic PDFs into interact
 
 - **PDF Upload & Processing**: Upload PDF documents with automatic text extraction
 - **AI-Powered Analysis**: Automatic domain detection and glossary generation
-- **Interactive PDF Viewer**: Highlight any text to get instant explanations
-- **Smart Definitions**: Combines document-specific glossary with LLM explanations
+- **Smart PDF Reader**: Scrollable, zoomable PDF viewer with selectable text
+- **Explain/Glossary Panel**: Right-side panel with two tabs — Explain and Glossary
+- **Instant Explanations**: Shows selected text and a definition; uses doc glossary first, then AI
+- **Auto Glossary Build**: Glossary loads automatically after upload
+- **Server Status Indicator**: Live health status shown in the header
 - **Modern UI**: Clean, academic-focused interface built with React and Tailwind CSS
 
 ## 🏗️ Architecture
@@ -21,9 +24,10 @@ Glossify is a full-stack application that transforms academic PDFs into interact
 - **Glossary Generation**: Creates document-specific technical term definitions
 
 ### Frontend (Next.js + React)
-- **PDF Viewer**: Interactive PDF display with text selection
-- **Real-time Explanations**: Popup tooltips with term definitions
-- **Glossary Panel**: Browse all identified technical terms
+- **PDF Viewer**: Continuous scroll with zoom controls, selectable text via Text Layer
+- **Explain Panel**: Shows what you highlighted and the explanation with source + domain
+- **Glossary Tab**: Browse the full glossary; clicking a term triggers explanation
+- **Auto Glossary**: Glossary is fetched after upload without an extra click
 - **Responsive Design**: Works on desktop and mobile devices
 
 ## 🚀 Quick Start
@@ -92,9 +96,10 @@ Frontend will run on `http://localhost:3000`
 
 1. Open `http://localhost:3000` in your browser
 2. Upload a PDF file (research paper, article, etc.)
-3. Wait for the document to be processed
-4. Click "Load Glossary" to see identified terms
-5. Highlight any text in the PDF to get instant explanations
+3. Wait for the document to be processed; the glossary loads automatically
+4. Scroll and zoom in the PDF on the left
+5. Highlight any text — the Explain tab (right) shows the selected text and its definition
+6. Switch to the Glossary tab (right) to browse all terms; click a term to explain it
 
 ## 📚 API Documentation
 
@@ -195,17 +200,19 @@ The backend is built with Flask and includes:
 
 The frontend is built with Next.js and includes:
 
-- **PDF Viewer**: React-PDF for document display
-- **Interactive Highlighting**: Custom text selection handling
+- **PDF Viewer**: React-PDF for document display with continuous scroll + zoom
+- **Interactive Highlighting**: Custom selection handling within the PDF container
+- **Explain/Glossary Panel**: Tabbed right panel for explanations and glossary browsing
 - **API Integration**: Axios for backend communication
 - **Responsive Design**: Tailwind CSS for styling
 
 **Key Files:**
-- `pages/index.tsx`: Main application page
-- `components/PdfReader.tsx`: PDF viewer with highlighting
-- `components/GlossaryPanel.tsx`: Glossary display
-- `components/Popover.tsx`: Term explanation popup
-- `lib/api.ts`: Backend API integration
+- `frontend/pages/index.tsx`: Main application page and layout
+- `frontend/components/PdfReader.tsx`: Scrollable, zoomable PDF viewer with text selection
+- `frontend/components/ExplainPanel.tsx`: Shows selected text and explanation
+- `frontend/components/GlossaryPanel.tsx`: Glossary display and term selection
+- `frontend/components/Tabs.tsx`: Simple tabs for the right panel
+- `frontend/lib/api.ts`: Backend API integration
 
 ### Environment Variables
 
@@ -237,7 +244,20 @@ NEXT_PUBLIC_API_URL=http://localhost:5001
 
 ### Frontend Configuration
 
-- **PDF Worker**: Uses CDN-hosted PDF.js worker
+- **PDF Worker**: Uses CDN-hosted PDF.js worker. If your environment blocks CDNs, switch to a local worker import in `frontend/components/PdfReader.tsx`.
+
+## 🧭 User Experience Overview
+
+- Upload a PDF; the app extracts text and analyzes it for domains and glossary terms.
+- The PDF renders on the left. You can scroll through pages and adjust zoom.
+- Highlight any word or phrase in the PDF:
+  - If the term exists in the document glossary, the Explain tab shows that definition immediately.
+  - Otherwise, the app asks the AI to explain it in context and shows the result.
+- The right panel has two tabs:
+  - Explain: shows the selected text and a clear explanation with source and domain.
+  - Glossary: list of all extracted terms. Clicking a term switches back to Explain with its definition.
+
+Tip: There’s a small server status indicator in the header so you know the backend is reachable.
 - **API Timeout**: 30 seconds
 - **Responsive Breakpoints**: Mobile-first design
 

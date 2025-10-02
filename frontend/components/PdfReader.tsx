@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 // Required for selectable text/annotation layers in react-pdf
 import 'react-pdf/dist/esm/Page/TextLayer.css';
@@ -56,6 +56,19 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
     onSelect(textSel);
   };
 
+  const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    // Support pinch-zoom (ctrlKey true) or Cmd/Ctrl + wheel to zoom
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? -0.05 : 0.05;
+      setScale((s) => Math.min(3, Math.max(0.5, parseFloat((s + delta).toFixed(2)))));
+    }
+    // otherwise normal scrolling
+  }, []);
+  const zoomBy = (delta: number) => {
+    setScale((s) => Math.min(3, Math.max(0.5, parseFloat((s + delta).toFixed(2)))));
+  };
+
 
     // If PDF fails to load, show a friendly message instead of text view
   if (pdfError) {
@@ -75,13 +88,13 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
         <div className="space-x-2">
           <button
             className="btn-secondary text-sm"
-            onClick={() => setScale((s) => Math.max(0.5, parseFloat((s - 0.1).toFixed(2))))}
+            onClick={() => zoomBy(-0.1)}
           >
             -
           </button>
           <button
             className="btn-secondary text-sm"
-            onClick={() => setScale((s) => Math.min(3, parseFloat((s + 0.1).toFixed(2))))}
+            onClick={() => zoomBy(0.1)}
           >
             +
           </button>
@@ -93,6 +106,7 @@ export const PdfReader: React.FC<PdfReaderProps> = ({
         className="relative border border-gray-200 rounded-lg overflow-auto max-h-[75vh]"
         onMouseUp={handleTextSelection}
         onTouchEnd={handleTextSelection}
+        onWheel={handleWheel}
       >
         <Document
           file={file}

@@ -1,6 +1,6 @@
-import React, { useState, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { UploadResponse, ExplainResponse } from '../types';
-import { uploadFile, getGlossary, explainTerm, healthCheck } from '../lib/api';
+import { uploadFile, getGlossary, explainTerm, healthCheck, listPapers, getPaperMeta, getPaperFile, listUsers, deleteUser } from '../lib/api';
 import { PdfReader } from '../components/PdfReader';
 import { GlossaryPanel } from '../components/GlossaryPanel';
 import { Tabs } from '../components/Tabs';
@@ -17,8 +17,17 @@ export default function Home() {
   const [selectedText, setSelectedText] = useState<string>('');
   const [explanation, setExplanation] = useState<ExplainResponse | null>(null);
   const [isExplaining, setIsExplaining] = useState(false);
+  const [lookupMode, setLookupMode] = useState<'local' | 'ai' | null>(null);
+  const [leftWidthPct, setLeftWidthPct] = useState<number>(66); // for resizable layout
+  const isDraggingRef = useRef(false);
   const [serverStatus, setServerStatus] = useState<'checking' | 'online' | 'offline'>('checking');
+  const [activeUserId, setActiveUserId] = useState<string | null>(null);
+  const [activeUserName, setActiveUserName] = useState<string>('');
+  const [library, setLibrary] = useState<Array<{ paper_id: string; title: string; file_size?: number; pages?: number; created_at: string }>>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const explainAbortRef = useRef<AbortController | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
   // Normalize helper and glossary lookup map
   const normalize = (s: string) =>
     (s || '')
@@ -36,8 +45,20 @@ export default function Home() {
   React.useEffect(() => {
     if (!paperData) return;
     if (!selectedText || selectedText.trim().length < 1) return;
+    if (selectedText.length > 120) {
+      setExplanation({ definition: 'Selection is quite long. Please highlight a shorter term or phrase.', source: 'System' });
+      setLookupMode(null);
+      return;
+    }
 
     setIsExplaining(true);
+    setLookupMode(null);
+    // cancel any in-flight explain request
+    if (explainAbortRef.current) {
+      explainAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    explainAbortRef.current = controller;
     const id = setTimeout(async () => {
       try {
         const key = normalize(selectedText);
@@ -50,12 +71,18 @@ export default function Home() {
             source: 'Doc (Glossary)',
             domain: paperData.domain_tags?.[0],
           });
+          setLookupMode('local');
         } else {
-          const resp = await explainTerm(paperData.paper_id, selectedText);
+          setLookupMode('ai');
+          const resp = await explainTerm(paperData.paper_id, selectedText, { signal: controller.signal });
           setExplanation(resp);
         }
       } catch (e) {
-        console.error(e);
+        // ignore cancels
+        // @ts-ignore
+        if (e?.name !== 'CanceledError' && e?.name !== 'AbortError') {
+          console.error(e);
+        }
       } finally {
         setIsExplaining(false);
       }
@@ -80,6 +107,48 @@ export default function Home() {
     checkServerHealth();
   }, []);
 
+  // Require active profile (Netflix-like)
+  useEffect(() => {
+    const uid = typeof window !== 'undefined' ? localStorage.getItem('glossify_active_user') : null;
+    setActiveUserId(uid);
+    if (!uid && typeof window !== 'undefined') {
+      window.location.href = '/profiles';
+    }
+  }, []);
+
+  // Load library for user
+  useEffect(() => {
+    const run = async () => {
+      if (!activeUserId) return;
+      try {
+        const { papers } = await listPapers(activeUserId);
+        setLibrary(papers || []);
+        // Fetch user name for header display
+        try {
+          const { users } = await listUsers();
+          const u = (users || []).find((x: any) => x.id === activeUserId);
+          setActiveUserName(u?.name || '');
+        } catch (e) {
+          // ignore
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    run();
+  }, [activeUserId, paperData]);
+
+  // Close menu on outside click
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (!menuRef.current) return;
+      if (!(e.target instanceof Node)) return;
+      if (!menuRef.current.contains(e.target)) setMenuOpen(false);
+    };
+    window.addEventListener('click', handler);
+    return () => window.removeEventListener('click', handler);
+  }, []);
+
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
@@ -91,7 +160,7 @@ export default function Home() {
 
     setIsUploading(true);
     try {
-      const response = await uploadFile(file);
+      const response = await uploadFile(file, activeUserId || undefined);
       setUploadedFile(file);
       setPaperData(response);
       setGlossary({}); // Reset glossary; will auto-load below
@@ -138,6 +207,62 @@ export default function Home() {
     }
   };
 
+  const handleAskAI = async (term: string) => {
+    if (!paperData) return;
+    try {
+      setIsExplaining(true);
+      setLookupMode('ai');
+      if (explainAbortRef.current) explainAbortRef.current.abort();
+      const controller = new AbortController();
+      explainAbortRef.current = controller;
+      const resp = await explainTerm(paperData.paper_id, term, { forceAI: true, signal: controller.signal });
+      setExplanation(resp);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setIsExplaining(false);
+    }
+  };
+
+  const handleGoogleSearch = (term: string, domainTags?: string[]) => {
+    const queryContext = domainTags && domainTags.length > 0 ? ` in the context of ${domainTags.join(', ')}` : '';
+    const q = `${term}${queryContext}`;
+    const url = `https://www.google.com/search?q=${encodeURIComponent(q)}`;
+    if (typeof window !== 'undefined') {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    }
+  };
+
+  // Resizable divider handlers (desktop only)
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!isDraggingRef.current) return;
+      const container = document.getElementById('split-container');
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const pct = Math.min(85, Math.max(30, (x / rect.width) * 100));
+      setLeftWidthPct(pct);
+    };
+    const onUp = () => {
+      isDraggingRef.current = false;
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, []);
+
+  const startDrag = () => {
+    isDraggingRef.current = true;
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+  };
+
   const handleGlossaryTermClick = (term: string) => {
     setSelectedTerm(term);
     setSelectedText(term);
@@ -149,21 +274,52 @@ export default function Home() {
     setPaperData(null);
     setGlossary({});
     setSelectedTerm('');
+    setExplanation(null);
+    if (explainAbortRef.current) {
+      explainAbortRef.current.abort();
+      explainAbortRef.current = null;
+    }
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
   };
 
+  const openFromLibrary = async (paperId: string) => {
+    try {
+      // Fetch meta then file
+      const meta = await getPaperMeta(paperId);
+      const blob = await getPaperFile(paperId);
+      // Create a File object for react-pdf convenience
+      const f = new File([blob], `${meta.title || 'document'}.pdf`, { type: 'application/pdf' });
+
+      // Reset state then set as if newly uploaded
+      setUploadedFile(f);
+      setPaperData({
+        paper_id: paperId,
+        title_guess: meta.title || 'Untitled Document',
+        domain_tags: meta.domain_tags || [],
+      } as any);
+      setGlossary({});
+      setSelectedTerm('');
+      setSelectedText('');
+      setExplanation(null);
+      setActiveTab('explain');
+
+      // Load glossary from backend (now DB-backed fallback exists)
+      const g = await getGlossary(paperId);
+      setGlossary(g.glossary);
+    } catch (e) {
+      console.error('Failed to open from library', e);
+      alert('Could not open the selected paper.');
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gray-50">
-      <div className="container mx-auto px-4 py-8">
-        {/* Header */}
-        <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-gray-900 mb-2">Glossify</h1>
-          <p className="text-lg text-gray-600 mb-4">Explain any term by highlighting it in the PDF.</p>
-          
-          {/* Server Status */}
-          <div className="flex items-center justify-center space-x-2 mb-4">
+      <div className="container mx-auto px-4 py-6">
+        {/* Top Bar: Server status (left), Account menu (right) */}
+        <div className="mb-4 flex items-center justify-between">
+          <div className="flex items-center space-x-2">
             <div className={`w-2 h-2 rounded-full ${
               serverStatus === 'online' ? 'bg-green-500' : 
               serverStatus === 'offline' ? 'bg-red-500' : 'bg-yellow-500'
@@ -173,10 +329,85 @@ export default function Home() {
                serverStatus === 'offline' ? 'Server Offline' : 'Checking...'}
             </span>
           </div>
+          {activeUserId && (
+            <div className="relative flex items-center gap-3" ref={menuRef}>
+              <div className="text-sm text-gray-700 hidden sm:block">Signed in as <span className="font-medium">{activeUserName || activeUserId}</span></div>
+              <button
+                aria-label="Settings"
+                className="inline-flex items-center justify-center w-9 h-9 rounded border bg-white hover:bg-gray-50"
+                onClick={() => setMenuOpen((v) => !v)}
+                title="Settings"
+              >
+                <span className="text-xl leading-none text-gray-700">⚙︎</span>
+              </button>
+              {menuOpen && (
+                <div className="absolute right-0 top-full mt-2 w-44 rounded-md border bg-white shadow-md p-1 z-10">
+                  <div className="px-3 py-2 text-xs text-gray-500">{activeUserName || activeUserId}</div>
+                  <button
+                    className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 rounded"
+                    onClick={() => {
+                      localStorage.removeItem('glossify_active_user');
+                      setMenuOpen(false);
+                      window.location.href = '/profiles';
+                    }}
+                  >
+                    Switch Account
+                  </button>
+                  <button
+                    className="w-full text-left px-3 py-2 text-sm text-red-700 hover:bg-red-50 rounded"
+                    onClick={async () => {
+                      if (!activeUserId) return;
+                      const ok = window.confirm('Delete this account? All records may be lost.');
+                      if (!ok) return;
+                      try {
+                        await deleteUser(activeUserId);
+                      } catch (e) {
+                        console.error(e);
+                      }
+                      localStorage.removeItem('glossify_active_user');
+                      setMenuOpen(false);
+                      window.location.href = '/profiles';
+                    }}
+                  >
+                    Delete Account
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
-        {/* Upload Section */}
-        <div className="card p-6 mb-8">
+        {/* Library first (if any) */}
+        {activeUserId && library && library.length > 0 && (
+          <div className="card p-6 mb-6">
+            <h2 className="text-xl font-semibold mb-4">Your Library</h2>
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-600">
+                    <th className="py-2 pr-4">Name</th>
+                    <th className="py-2 pr-4">Date Uploaded</th>
+                    <th className="py-2 pr-4">File Size</th>
+                    <th className="py-2 pr-4">Total Pages</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {library.map((p) => (
+                    <tr key={p.paper_id} className="border-t hover:bg-gray-50 cursor-pointer" onClick={() => openFromLibrary(p.paper_id)}>
+                      <td className="py-2 pr-4 text-primary-700 underline-offset-2 hover:underline">{p.title}</td>
+                      <td className="py-2 pr-4">{new Date(p.created_at).toLocaleString()}</td>
+                      <td className="py-2 pr-4">{p.file_size ? `${(p.file_size / (1024 * 1024)).toFixed(2)} MB` : '—'}</td>
+                      <td className="py-2 pr-4">{p.pages ?? '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Upload Section (second) */}
+        <div className="card p-6 mb-6">
           <h2 className="text-xl font-semibold mb-4">Upload PDF</h2>
           <div className="flex items-center space-x-4">
             <input
@@ -219,82 +450,106 @@ export default function Home() {
           )}
         </div>
 
-        {/* Main Content */}
-        {paperData && uploadedFile && (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-            {/* PDF Viewer */}
-            <div className="lg:col-span-2">
-              <div className="card p-6">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-xl font-semibold">PDF Viewer</h2>
-                  {isBuildingGlossary && (
-                    <div className="text-sm text-gray-500">Building glossary…</div>
-                  )}
-                </div>
-
-                <PdfReader
-                  file={uploadedFile}
-                  paperId={paperData.paper_id}
-                  text={paperData.title_guess}
-                  onSelect={(t) => setSelectedText(t)}
-                />
-              </div>
-            </div>
-
-            {/* Right Panel: Explain / Glossary */}
-            <div className="lg:col-span-1 flex flex-col overflow-hidden">
-              <Tabs
-                tabs={[
-                  { key: 'explain', label: 'Explain' },
-                  { key: 'glossary', label: `Glossary (${Object.keys(glossary).length})` },
-                ]}
-                active={activeTab}
-                onChange={(k) => setActiveTab(k as 'explain' | 'glossary')}
-              />
-              <div className="flex-1">
-                {activeTab === 'explain' ? (
-                  <div className="card">
-                    <ExplainPanel
-                      selectedText={selectedText}
-                      isLoading={isExplaining}
-                      explanation={explanation}
-                    />
-                  </div>
-                ) : (
-                  <div className="p-0">
-                    <GlossaryPanel
-                      glossary={glossary}
-                      onTermClick={handleGlossaryTermClick}
-                      selectedTerm={selectedTerm}
-                    />
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Instructions */}
+        {/* How to Use (third, when no paper open) */}
         {!paperData && (
-          <div className="card p-6">
+          <div className="card p-6 mb-6">
             <h2 className="text-xl font-semibold mb-4">How to Use</h2>
             <div className="space-y-3 text-gray-700">
               <div className="flex items-start space-x-3">
                 <span className="flex-shrink-0 w-6 h-6 bg-primary-100 text-primary-600 rounded-full flex items-center justify-center text-sm font-medium">1</span>
-                <p>Upload a PDF file using the button above</p>
+                <p>Choose or create an account, then upload a PDF.</p>
               </div>
               <div className="flex items-start space-x-3">
                 <span className="flex-shrink-0 w-6 h-6 bg-primary-100 text-primary-600 rounded-full flex items-center justify-center text-sm font-medium">2</span>
-                <p>Glossary builds automatically after upload; open the Glossary tab to browse terms</p>
+                <p>Glossary builds automatically after upload; open the Glossary tab to browse terms.</p>
               </div>
               <div className="flex items-start space-x-3">
                 <span className="flex-shrink-0 w-6 h-6 bg-primary-100 text-primary-600 rounded-full flex items-center justify-center text-sm font-medium">3</span>
-                <p>Select text in the PDF to get instant explanations</p>
+                <p>Select text in the PDF to get instant explanations. Use “Ask AI” or Google if needed.</p>
               </div>
-              
             </div>
           </div>
         )}
+
+        {/* Main Content */}
+        {paperData && uploadedFile && (
+          <div id="split-container" className="w-full">
+            <div className="flex flex-col lg:flex-row gap-8">
+              {/* Left: PDF Viewer */}
+              <div
+                className="lg:flex-shrink-0"
+                style={{ flexBasis: `${leftWidthPct}%`, minWidth: 0 }}
+              >
+                <div className="card p-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <h2 className="text-xl font-semibold">PDF Viewer</h2>
+                    {isBuildingGlossary && (
+                      <div className="text-sm text-gray-500">Building glossary…</div>
+                    )}
+                  </div>
+
+                  <PdfReader
+                    file={uploadedFile}
+                    paperId={paperData.paper_id}
+                    text={paperData.title_guess}
+                    onSelect={(t) => setSelectedText(t)}
+                  />
+                </div>
+              </div>
+
+              {/* Draggable Divider (only visible on lg) */}
+              <div
+                className="hidden lg:block w-1 bg-gray-200 hover:bg-gray-300 cursor-col-resize"
+                onMouseDown={startDrag}
+                aria-label="Resize panels"
+                title="Drag to resize"
+              />
+
+              {/* Right: Explain/Glossary */}
+              <div className="flex-1 flex flex-col overflow-hidden" style={{ minWidth: 0 }}>
+                <Tabs
+                  tabs={[
+                    { key: 'explain', label: 'Explain' },
+                    { key: 'glossary', label: `Glossary (${Object.keys(glossary).length})` },
+                  ]}
+                  active={activeTab}
+                  onChange={(k) => setActiveTab(k as 'explain' | 'glossary')}
+                />
+                <div className="flex-1">
+                  {activeTab === 'explain' ? (
+                    <div className="card">
+                      <ExplainPanel
+                        selectedText={selectedText}
+                        isLoading={isExplaining}
+                        explanation={explanation}
+                        mode={lookupMode}
+                        domainTags={paperData.domain_tags}
+                        onAskAI={handleAskAI}
+                        onGoogleSearch={handleGoogleSearch}
+                        onCancel={() => {
+                          if (explainAbortRef.current) {
+                            explainAbortRef.current.abort();
+                          }
+                          setIsExplaining(false);
+                        }}
+                      />
+                    </div>
+                  ) : (
+                    <div className="p-0">
+                      <GlossaryPanel
+                        glossary={glossary}
+                        onTermClick={handleGlossaryTermClick}
+                        selectedTerm={selectedTerm}
+                      />
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        
       </div>
     </div>
   );

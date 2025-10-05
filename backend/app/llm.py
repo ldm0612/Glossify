@@ -37,7 +37,9 @@ class DocumentAnalyzer(BaseLLMAdapter):
     """Specialized agent for comprehensive document analysis - domain tagging and glossary extraction"""
 
     def analyze_document(
-        self, title: str, full_text: str
+        self, 
+        title: str, 
+        full_text: str
     ) -> Tuple[List[str], Dict[str, str]]:
         """Analyze document to extract both domain tags and glossary in a single LLM call"""
         # Truncate text if too long

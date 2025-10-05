@@ -6,6 +6,7 @@ class UploadResponse(BaseModel):
     paper_id: str
     title_guess: str
     domain_tags: Optional[List[str]] = None
+    glossary: Optional[Dict[str, str]] = None
 
 class GlossaryResponse(BaseModel):
     glossary: Dict[str, str]
@@ -14,6 +15,7 @@ class GlossaryResponse(BaseModel):
 class ExplainRequest(BaseModel):
     paper_id: str
     term: str
+    force_ai: Optional[bool] = False
 
 class ExplainResponse(BaseModel):
     definition: str

@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { UploadResponse, ExplainResponse } from '../types';
-import { uploadFile, getGlossary, explainTerm, healthCheck, listPapers, getPaperMeta, getPaperFile, listUsers, deleteUser } from '../lib/api';
+import { uploadFile, getGlossary, explainTerm, healthCheck, listPapers, getPaperMeta, getPaperFile, listUsers, deleteUser, deletePaper } from '../lib/api';
 import { PdfReader } from '../components/PdfReader';
 import { GlossaryPanel } from '../components/GlossaryPanel';
 import { Tabs } from '../components/Tabs';
@@ -389,15 +389,47 @@ export default function Home() {
                     <th className="py-2 pr-4">Date Uploaded</th>
                     <th className="py-2 pr-4">File Size</th>
                     <th className="py-2 pr-4">Total Pages</th>
+                    <th className="py-2 pr-2 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
                   {library.map((p) => (
-                    <tr key={p.paper_id} className="border-t hover:bg-gray-50 cursor-pointer" onClick={() => openFromLibrary(p.paper_id)}>
-                      <td className="py-2 pr-4 text-primary-700 underline-offset-2 hover:underline">{p.title}</td>
+                    <tr key={p.paper_id} className="border-t hover:bg-gray-50">
+                      <td
+                        className="py-2 pr-4 text-primary-700 underline underline-offset-2 cursor-pointer"
+                        onClick={() => openFromLibrary(p.paper_id)}
+                        title="Open"
+                      >
+                        {p.title}
+                      </td>
                       <td className="py-2 pr-4">{new Date(p.created_at).toLocaleString()}</td>
                       <td className="py-2 pr-4">{p.file_size ? `${(p.file_size / (1024 * 1024)).toFixed(2)} MB` : '—'}</td>
                       <td className="py-2 pr-4">{p.pages ?? '—'}</td>
+                      <td className="py-2 pr-2 text-right">
+                        <div className="inline-flex items-center gap-2">
+                          <button
+                            className="btn-secondary !py-1 !px-2 text-xs text-red-700 hover:bg-red-50"
+                            onClick={async (e) => {
+                              const ok = window.confirm('Delete this paper? This cannot be undone.');
+                              if (!ok) return;
+                              try {
+                                await deletePaper(p.paper_id);
+                                setLibrary((prev) => prev.filter((it) => it.paper_id !== p.paper_id));
+                                // If the deleted paper is currently open, reset the viewer state
+                                if (paperData?.paper_id === p.paper_id) {
+                                  handleReset();
+                                }
+                              } catch (err) {
+                                console.error(err);
+                                alert('Failed to delete the paper.');
+                              }
+                            }}
+                            title="Delete"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
